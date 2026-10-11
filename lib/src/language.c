@@ -282,11 +282,16 @@ TSSymbol ts_language_symbol_for_name(
   bool is_named
 ) {
   if (is_named && length == 5 && !strncmp(string, "ERROR", length)) return ts_builtin_sym_error;
+  // `symbol_names` is indexed by symbol id, so unlike `field_names` it is not sorted and
+  // cannot be bisected. Rejecting on the first byte before reading the metadata table or
+  // calling strncmp discards nearly every candidate for one load and one comparison.
   uint16_t count = (uint16_t)ts_language_symbol_count(self);
+  char first = length > 0 ? string[0] : 0;
   for (TSSymbol i = 0; i < count; i++) {
+    const char *symbol_name = self->symbol_names[i];
+    if (symbol_name[0] != first) continue;
     TSSymbolMetadata metadata = ts_language_symbol_metadata(self, i);
     if ((!metadata.visible && !metadata.supertype) || metadata.named != is_named) continue;
-    const char *symbol_name = self->symbol_names[i];
     if (!strncmp(symbol_name, string, length) && !symbol_name[length]) {
       return self->public_symbol_map[i];
     }
@@ -322,21 +327,43 @@ const char *ts_language_field_name_for_id(
   }
 }
 
+// Compare a (name, length) pair against a NUL-terminated field name, in the order
+// `field_names` is generated in: byte order, then shorter first. Stops at the first
+// differing byte and never measures the field name's length, so a mismatch in the first
+// character costs a single comparison.
+static inline int ts_language_compare_field_name(
+  const char *name,
+  uint32_t name_length,
+  const char *field_name
+) {
+  for (uint32_t i = 0; i < name_length; i++) {
+    unsigned char lhs = (unsigned char)name[i];
+    unsigned char rhs = (unsigned char)field_name[i];
+    // A NUL in the field name compares low, which is the order wanted here: the field
+    // name is then a proper prefix of `name`, so it sorts first.
+    if (lhs != rhs) return lhs < rhs ? -1 : 1;
+  }
+  // Every byte of `name` matched; the field name is longer iff it has not ended here.
+  return field_name[name_length] == 0 ? 0 : -1;
+}
+
 TSFieldId ts_language_field_id_for_name(
   const TSLanguage *self,
   const char *name,
   uint32_t name_length
 ) {
-  uint16_t count = (uint16_t)ts_language_field_count(self);
-  for (TSSymbol i = 1; i < count + 1; i++) {
-    switch (strncmp(name, self->field_names[i], name_length)) {
-      case 0:
-        if (self->field_names[i][name_length] == 0) return i;
-        break;
-      case -1:
-        return 0;
-      default:
-        break;
+  // `field_names` is sorted, which the previous linear scan already relied on for its
+  // early exit, so the lookup can bisect instead of walking it. Field ids are 1-based.
+  uint32_t count = ts_language_field_count(self);
+  uint32_t low = 1, high = count + 1;
+  while (low < high) {
+    uint32_t mid = low + (high - low) / 2;
+    int cmp = ts_language_compare_field_name(name, name_length, self->field_names[mid]);
+    if (cmp == 0) return (TSFieldId)mid;
+    if (cmp < 0) {
+      high = mid;
+    } else {
+      low = mid + 1;
     }
   }
   return 0;

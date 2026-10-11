@@ -104,6 +104,33 @@ fn test_id_for_node_kind_only_matches_the_whole_error_name() {
 }
 
 #[test]
+fn test_field_id_for_name_matches_whole_names_only() {
+    let language = get_language("rust");
+    let count = language.field_count() as u16;
+    assert!(count > 0);
+
+    for id in 1..=count {
+        let name = language.field_name_for_id(id).unwrap();
+        assert_eq!(language.field_id_for_name(name).map(Into::into), Some(id), "{name:?}");
+
+        // A prefix of a field name is not that field, and neither is the name with
+        // anything appended to it.
+        for len in 0..name.len() {
+            let prefix = &name[..len];
+            assert_ne!(
+                language.field_id_for_name(prefix).map(Into::into),
+                Some(id),
+                "{prefix:?} matched {name:?}"
+            );
+        }
+        assert_eq!(language.field_id_for_name(format!("{name}_")), None);
+    }
+
+    assert_eq!(language.field_id_for_name(""), None);
+    assert_eq!(language.field_id_for_name("not_a_field"), None);
+}
+
+#[test]
 fn test_symbol_metadata_checks() {
     let language = get_language("rust");
     for i in 0..language.node_kind_count() {
